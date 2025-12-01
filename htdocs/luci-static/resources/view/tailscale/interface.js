@@ -13,40 +13,48 @@
 
 return view.extend({
 	async load() {
-		const res = await fs.exec('/sbin/ip', ['-s', '-j', 'ad']);
-		if (res.code !== 0 || !res.stdout || res.stdout.trim() === '') {
-			ui.addNotification(null, E('p', {}, _('Unable to get interface info: %s.').format(res.message)));
+		const ifname = 'tailscale0';
+		const parsedInfo = { name: ifname };
+
+		// Read statistics from sysfs and IP info in parallel
+		const [rxRes, txRes, mtuRes, ipRes] = await Promise.all([
+			fs.read('/sys/class/net/' + ifname + '/statistics/rx_bytes'),
+			fs.read('/sys/class/net/' + ifname + '/statistics/tx_bytes'),
+			fs.read('/sys/class/net/' + ifname + '/mtu'),
+			fs.exec('/sbin/ip', ['addr', 'show', ifname])
+		]);
+
+		// If interface doesn't exist, return empty
+		if (!rxRes && !mtuRes && (!ipRes || ipRes.code !== 0)) {
 			return [];
 		}
 
-		try {
-			const interfaces = JSON.parse(res.stdout);
-			const tailscaleInterfaces = interfaces.filter(iface => iface.ifname.match(/tailscale[0-9]+/));
+		// Parse rx/tx bytes
+		parsedInfo.rxBytes = rxRes ? '%1024mB'.format(parseInt(rxRes.trim(), 10) || 0) : '-';
+		parsedInfo.txBytes = txRes ? '%1024mB'.format(parseInt(txRes.trim(), 10) || 0) : '-';
+		parsedInfo.mtu = mtuRes ? mtuRes.trim() : '-';
 
-			return tailscaleInterfaces.map(iface => {
-				const parsedInfo = {
-					name: iface.ifname
-				};
-
-				const addr_info = iface.addr_info || [];
-				addr_info.forEach(addr => {
-					if (addr.family === 'inet' && !parsedInfo.ipv4) {
-						parsedInfo.ipv4 = addr.local;
-					} else if (addr.family === 'inet6' && !parsedInfo.ipv6) {
-						parsedInfo.ipv6 = addr.local;
-					}
-				});
-
-				parsedInfo.mtu = iface.mtu;
-				parsedInfo.rxBytes = '%1024mB'.format(iface.stats64.rx.bytes);
-				parsedInfo.txBytes = '%1024mB'.format(iface.stats64.tx.bytes);
-
-				return parsedInfo;
-			});
-		} catch (e) {
-			ui.addNotification(null, E('p', {}, _('Error parsing interface info: %s.').format(e.message)));
-			return [];
+		// Parse IP addresses from `ip addr show` output
+		if (ipRes && ipRes.code === 0 && ipRes.stdout) {
+			const lines = ipRes.stdout.split('\n');
+			for (const line of lines) {
+				// Match IPv4: "inet 100.80.52.1/32 scope global tailscale0"
+				const ipv4Match = line.match(/^\s*inet\s+([0-9.]+)/);
+				if (ipv4Match && !parsedInfo.ipv4) {
+					parsedInfo.ipv4 = ipv4Match[1];
+				}
+				// Match IPv6 (skip link-local fe80::): "inet6 fd7a:115c:a1e0::9f01:1560/128 scope global"
+				const ipv6Match = line.match(/^\s*inet6\s+([0-9a-fA-F:]+)/);
+				if (ipv6Match && !parsedInfo.ipv6 && !ipv6Match[1].startsWith('fe80')) {
+					parsedInfo.ipv6 = ipv6Match[1];
+				}
+			}
 		}
+
+		parsedInfo.ipv4 = parsedInfo.ipv4 || '-';
+		parsedInfo.ipv6 = parsedInfo.ipv6 || '-';
+
+		return [parsedInfo];
 	},
 
 	pollData(container) {
