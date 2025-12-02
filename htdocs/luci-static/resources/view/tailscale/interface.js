@@ -12,7 +12,7 @@
 'require view';
 
 return view.extend({
-	async load() {
+	async loadInterfaceInfo() {
 		const ifname = 'tailscale0';
 		const parsedInfo = { name: ifname };
 
@@ -24,9 +24,9 @@ return view.extend({
 			fs.exec('/sbin/ip', ['addr', 'show', ifname])
 		]);
 
-		// If interface doesn't exist, return empty
+		// If interface doesn't exist, return null
 		if (!rxRes && !mtuRes && (!ipRes || ipRes.code !== 0)) {
-			return [];
+			return null;
 		}
 
 		// Parse rx/tx bytes
@@ -54,7 +54,62 @@ return view.extend({
 		parsedInfo.ipv4 = parsedInfo.ipv4 || '-';
 		parsedInfo.ipv6 = parsedInfo.ipv6 || '-';
 
-		return [parsedInfo];
+		return parsedInfo;
+	},
+
+	async loadPeerStatus() {
+		const statusRes = await fs.exec('tailscale', ['status', '--json']).catch(err => ({
+			code: 1,
+			message: err.message || 'Failed to execute tailscale command'
+		}));
+
+		if (statusRes.code !== 0) {
+			const message = typeof statusRes.message === 'string' ? statusRes.message : 'Command failed';
+			if (message.includes('Permission')) {
+				return { error: _('Permission denied: Ensure LuCI has access to run "tailscale status".') };
+			} else if (message.includes('not running') || message.includes('stopped')) {
+				return { error: _('Tailscale service is not running.') };
+			}
+			return { error: _('Unable to get Tailscale status: %s').format(message) };
+		}
+
+		if (!statusRes.stdout || statusRes.stdout.trim() === '') {
+			return { error: _('Tailscale status returned empty output.') };
+		}
+
+		try {
+			const statusJson = JSON.parse(statusRes.stdout);
+			const peers = statusJson.Peer || {};
+			const peerList = [];
+
+			for (const peer of Object.values(peers)) {
+				// Use DNSName (e.g., "device-name.tailnet.ts.net.") and extract the first part
+				const hostname = peer.DNSName ? peer.DNSName.split('.')[0] : (peer.HostName || '-');
+
+				peerList.push({
+					ip: peer.TailscaleIPs?.[0] || '-',
+					hostname: hostname,
+					online: peer.Online,
+					relay: peer.Relay || '-',
+					direct: !!peer.CurAddr,
+					rxBytes: peer.RxBytes ? '%1024mB'.format(peer.RxBytes) : '-',
+					txBytes: peer.TxBytes ? '%1024mB'.format(peer.TxBytes) : '-'
+				});
+			}
+
+			return { peers: peerList };
+		} catch (e) {
+			return { error: _('Error parsing Tailscale status: %s').format(e.message) };
+		}
+	},
+
+	async load() {
+		const [interfaceInfo, peerStatus] = await Promise.all([
+			this.loadInterfaceInfo(),
+			this.loadPeerStatus()
+		]);
+
+		return { interfaceInfo, peerStatus };
 	},
 
 	pollData(container) {
@@ -64,47 +119,92 @@ return view.extend({
 		});
 	},
 
-	renderContent(data) {
-		if (!Array.isArray(data) || data.length === 0) {
-			return E('div', {}, _('No interface online.'));
+	renderInterfaceTable(interfaceInfo) {
+		if (!interfaceInfo) {
+			return E('div', { class: 'cbi-value' }, _('No interface online.'));
 		}
-		const rows = [
-			E('th', { class: 'th', colspan: '2' }, _('Network Interface Information'))
-		];
-		data.forEach(interfaceData => {
-			rows.push(
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('Interface Name')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.name)
-				]),
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('IPv4 Address')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.ipv4)
-				]),
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('IPv6 Address')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.ipv6)
-				]),
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('MTU')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.mtu)
-				]),
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('Total Download')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.rxBytes)
-				]),
-				E('tr', { class: 'tr' }, [
-					E('td', { class: 'td left', width: '25%' }, _('Total Upload')),
-					E('td', { class: 'td left', width: '25%' }, interfaceData.txBytes)
-				])
-			);
-		});
 
-		return E('table', { 'class': 'table' }, rows);
+		return E('table', { class: 'table' }, [
+			E('tr', { class: 'tr' }, [
+				E('th', { class: 'th left', colspan: '2' }, _('Network Interface Information'))
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('Interface Name')),
+				E('td', { class: 'td left' }, interfaceInfo.name)
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('IPv4 Address')),
+				E('td', { class: 'td left' }, interfaceInfo.ipv4)
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('IPv6 Address')),
+				E('td', { class: 'td left' }, interfaceInfo.ipv6)
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('MTU')),
+				E('td', { class: 'td left' }, interfaceInfo.mtu)
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('Total Download')),
+				E('td', { class: 'td left' }, interfaceInfo.rxBytes)
+			]),
+			E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', width: '25%' }, _('Total Upload')),
+				E('td', { class: 'td left' }, interfaceInfo.txBytes)
+			])
+		]);
+	},
+
+	renderPeerTable(peerStatus) {
+		const rows = [
+			E('tr', { class: 'tr' }, [
+				E('th', { class: 'th left', colspan: '7' }, _('Peer Status'))
+			]),
+			E('tr', { class: 'tr cbi-section-table-titles' }, [
+				E('th', { class: 'th left' }, _('IP')),
+				E('th', { class: 'th left' }, _('Hostname')),
+				E('th', { class: 'th left' }, _('Status')),
+				E('th', { class: 'th left' }, _('Connection')),
+				E('th', { class: 'th left' }, _('Relay')),
+				E('th', { class: 'th left' }, _('Download')),
+				E('th', { class: 'th left' }, _('Upload'))
+			])
+		];
+
+		if (peerStatus.error) {
+			rows.push(E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', colspan: '7' }, peerStatus.error)
+			]));
+		} else if (!peerStatus.peers || peerStatus.peers.length === 0) {
+			rows.push(E('tr', { class: 'tr' }, [
+				E('td', { class: 'td left', colspan: '7' }, _('No peers found.'))
+			]));
+		} else {
+			peerStatus.peers.forEach(peer => {
+				rows.push(E('tr', { class: 'tr' }, [
+					E('td', { class: 'td left' }, peer.ip),
+					E('td', { class: 'td left' }, peer.hostname),
+					E('td', { class: 'td left' }, peer.online ? _('Online') : _('Offline')),
+					E('td', { class: 'td left' }, peer.direct ? _('Direct') : _('Relayed')),
+					E('td', { class: 'td left' }, peer.relay),
+					E('td', { class: 'td left' }, peer.rxBytes),
+					E('td', { class: 'td left' }, peer.txBytes)
+				]));
+			});
+		}
+
+		return E('table', { class: 'table', style: 'margin-top: 1em;' }, rows);
+	},
+
+	renderContent(data) {
+		return E('div', {}, [
+			this.renderInterfaceTable(data.interfaceInfo),
+			this.renderPeerTable(data.peerStatus)
+		]);
 	},
 
 	render(data) {
-		const content = E([], [
+		const content = E('div', {}, [
 			E('h2', { class: 'content' }, _('Tailscale')),
 			E('div', { class: 'cbi-map-descr' }, _('Tailscale is a cross-platform and easy to use virtual LAN.')),
 			E('div')
