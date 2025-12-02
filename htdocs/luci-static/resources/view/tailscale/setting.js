@@ -259,7 +259,7 @@ return view.extend({
 		o.default = '';
 		o.rmempty = true;
 
-		o = s.option(form.Value, 'authKey', _('Auth Key'));
+		o = s.option(form.Value, 'authkey', _('Auth Key'));
 		o.default = '';
 		o.rmempty = true;
 
