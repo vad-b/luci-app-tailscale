@@ -3,6 +3,18 @@
 		"title": "Tailscale",
 		"order": 90,
 		"action": {
+			"type": "view",
+			"path": "tailscale/index"
+		},
+		"depends": {
+			"acl": [ "luci-app-tailscale" ],
+			"uci": { "tailscale": true }
+		}
+	},
+	"admin/vpn/tailscale-old": {
+		"title": "Tailscale (Old)",
+		"order": 91,
+		"action": {
 			"type": "firstchild"
 		},
 		"depends": {
@@ -10,28 +22,28 @@
 			"uci": { "tailscale": true }
 		}
 	},
-	"admin/vpn/tailscale/setting": {
+	"admin/vpn/tailscale-old/setting": {
 		"title": "Global Settings",
 		"order": 10,
 		"action": {
 			"type": "view",
-			"path": "tailscale/setting"
+			"path": "tailscale/old-setting"
 		}
 	},
-	"admin/vpn/tailscale/interface": {
+	"admin/vpn/tailscale-old/interface": {
 		"title": "Interface Info",
 		"order": 20,
 		"action": {
 			"type": "view",
-			"path": "tailscale/interface"
+			"path": "tailscale/old-interface"
 		}
 	},
-	"admin/vpn/tailscale/log": {
+	"admin/vpn/tailscale-old/log": {
 		"title": "Logs",
 		"order": 30,
 		"action": {
 			"type": "view",
-			"path": "tailscale/log"
+			"path": "tailscale/old-log"
 		}
 	}
 }
